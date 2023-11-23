@@ -1,7 +1,7 @@
 import time
 from tqdm import tqdm
 import os
-
+import sys
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
@@ -9,7 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 from torch_geometric.loader import DataLoader, DenseDataLoader as DenseLoader
 from torch.optim.lr_scheduler import _LRScheduler, StepLR
 
-class PolyLR(_LRScheduler):
+class PolyLR(_LRScheduler): # Polynomial learning rate scheduler
     def __init__(self, optimizer, max_iters, power=0.9, last_epoch=-1, min_lr=1e-5):
         self.power = power
         self.max_iters = max_iters
@@ -38,6 +38,7 @@ def node_classification(
     data.to(device)
     filename = os.path.join(outdir, 'model.tar')
     if os.path.isfile(filename) and args.evalonly:
+        # Dry run is performed during evaluation to avoid loading issues of quantization parameters
         use_tqdm = False
         args.epochs = 1
         args.runs=1
@@ -80,11 +81,11 @@ def node_classification(
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
-    if os.path.isfile(filename) and args.evalonly:
+    if os.path.isfile(filename) and args.evalonly: 
         print("Running test on: ", str(filename))
         checkpoint = torch.load(filename)
         model.load_state_dict(checkpoint['state_dict'], strict=True)
-        _, _, test_acc = test_planetoid(model, data)
+        _, _, test_acc = test_planetoid(model, data) # test dataset on data.test_mask
         return test_acc
 
     return best_acc
@@ -107,10 +108,12 @@ def graph_classification(
     folds,
     use_tqdm=True,
     outdir=None,
+    load_pretrained=True,
 ):
     best_acc = 0.0
     filename = os.path.join(outdir, 'model.tar')
     if os.path.isfile(filename) and args.evalonly:
+        # Dry run is performed during evaluation to avoid loading issues of quantization parameters
         use_tqdm = False
         args.epochs = 1
         args.runs=1
@@ -167,7 +170,11 @@ def graph_classification(
                     t.update(1)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
+
         break
+        # accuracy of graph classification on used datasets is usually performed with K-fold cross validation, but in this experiments
+        # datasets need to be deterministic, thus after seeded fold generation only first fold is used which fixates training and test data
+
 
     if os.path.isfile(filename) and args.evalonly:
         print("Running test on: ", str(filename))
@@ -217,14 +224,13 @@ def train(model, optimizer, loader):
         optimizer.step()
     return total_loss / len(loader.dataset)
 
-
+@torch.no_grad()
 def eval_acc(model, loader):
     model.eval()
 
     correct = 0
     for data in loader:
         data = data.to(device)
-        with torch.no_grad():
-            pred = model(data).max(1)[1]
+        pred = model(data).max(1)[1]
         correct += pred.eq(data.y.view(-1)).sum().item()
     return correct / len(loader.dataset)

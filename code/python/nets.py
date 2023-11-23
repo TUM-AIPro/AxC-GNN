@@ -1,11 +1,12 @@
 import torch
 import torch.nn.functional as F
-from torch.nn import Linear, Sequential, ReLU, Identity, BatchNorm1d as BN
-from torch_geometric.nn import global_mean_pool, GINConv, SAGEConv
+from torch.nn import Linear, Sequential, ReLU, PReLU, Identity, BatchNorm1d as BN
+from torch_geometric.nn import global_mean_pool, GINConv, SAGEConv, GCNConv, GATConv
 
 from quantization import IntegerQuantizer
 from linear_quantized import LinearQuantized
-from qconv import evaluate_prob_mask, GINConvQ, SAGEConvQ
+from qconv import evaluate_prob_mask, GINConvQ, SAGEConvQ, GINConvQnpp, SAGEConvQnpp, GCNConvQ, GATConvQ
+import sys
 
 def create_quantizer(qtype, qbits, ste, momentum, percentile, signed, sample_prop, norm=False):
     if qtype.startswith('FP'):
@@ -29,10 +30,28 @@ def make_quantizers(qtype, qbits, sign_input, ste, momentum, percentile, sample_
         "inputs": create_quantizer(
             qtype if q_input else "FP32", qbits if sign_input else qbits-1, ste, momentum, percentile, sign_input, sample_prop
         ),
+        "inputs_high": create_quantizer(
+            "FP32", 32, ste, momentum, percentile, sign_input, sample_prop
+        ),
         "weights": create_quantizer(
             qtype if q_weight else "FP32", qbits, ste, momentum, percentile, True, sample_prop,
         ),
         "features": create_quantizer(
+            qtype if q_features else "FP32", qbits, ste, momentum, percentile, True, sample_prop
+        ),
+        "features_high": create_quantizer(
+            "FP32", 32, ste, momentum, percentile, True, sample_prop
+        ),
+        "attention": create_quantizer(
+            qtype if q_features else "FP32", qbits, ste, momentum, percentile, True, sample_prop
+        ),
+        "alpha": create_quantizer(
+            qtype if q_features else "FP32", qbits, ste, momentum, percentile, True, sample_prop
+        ),
+        "alpha_high": create_quantizer(
+            "FP32", 32, ste, momentum, percentile, True, sample_prop
+        ),
+        "norm": create_quantizer(
             qtype if q_features else "FP32", qbits, ste, momentum, percentile, True, sample_prop
         ),
     }
@@ -169,7 +188,7 @@ class GIN(torch.nn.Module):
                 )
 
             self.lin1 = LinearQuantized(hidden, hidden, layer_quantizers=lq_signed, apx=apx, bias=False)
-            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx)
+            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx, bias=True)
 
     def reset_parameters(self):
         self.conv1.reset_parameters()
@@ -221,7 +240,7 @@ class CitGIN(torch.nn.Module):
                     Linear(hidden, hidden, bias=False),
                     ReLU(),
                 ),
-                train_eps=False,
+                train_eps=True,
             )
             self.conv2 = GINConv(
                 ResettableSequential(
@@ -230,7 +249,7 @@ class CitGIN(torch.nn.Module):
                     Linear(hidden, dataset.num_classes, bias=False),
                     ReLU(),
                 ),
-                train_eps=False,
+                train_eps=True,
             )
         else:
             gin_layer = GINConvQ
@@ -266,7 +285,7 @@ class CitGIN(torch.nn.Module):
                     LinearQuantized(hidden, hidden, layer_quantizers=lq, apx=apx, bias=False),
                     ReLU(),
                 ),
-                train_eps=False,
+                train_eps=True,
                 mp_quantizers=mq,
             )
             self.conv2 = gin_layer(
@@ -276,7 +295,7 @@ class CitGIN(torch.nn.Module):
                     LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx, bias=False),
                     ReLU(),
                 ),
-                train_eps=False,
+                train_eps=True,
                 mp_quantizers=mq,
             )
 
@@ -402,7 +421,7 @@ class SAGE(torch.nn.Module):
                 )
             )
             self.lin1 = LinearQuantized(hidden, hidden, layer_quantizers=lq_signed, apx=apx, bias=False)
-            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx)
+            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx, bias=True)
 
     def reset_parameters(self):
         for conv in self.convs:
@@ -503,6 +522,386 @@ class CitSAGE(torch.nn.Module):
 
         x = F.dropout(x, p=0.5, training=self.training)
         x = F.relu(self.conv1(x, edge_index, mask))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.conv2(x, edge_index, mask)
+        return x
+    
+class GAT(torch.nn.Module):
+    def __init__(
+        self,
+        dataset,
+        num_layers,
+        hidden,
+        qtype,
+        qbits,
+        ste,
+        momentum,
+        percentile,
+        sample_prop,
+        q_input=True,
+        q_weight=True,
+        q_features=True,
+        apx=0,
+    ):
+        super(GAT, self).__init__()
+
+        self.num_layers = num_layers
+
+        self.convs = torch.nn.ModuleList()
+        self.activs = torch.nn.ModuleList()
+        if qbits == 32:
+            self.conv1 = GATConv(
+                    dataset.num_features,
+                    hidden,
+                    bias=False,
+                )
+            for i in range(num_layers - 1):
+                self.convs.append(
+                    GATConv(
+                        hidden,
+                        hidden,
+                        bias=False,
+                    )
+                )
+                self.activs.append(ReLU())
+            self.lin1 = Linear(hidden, hidden, bias=False)
+            self.lin2 = Linear(hidden, dataset.num_classes)
+        else:
+            gat_conv = GATConvQ
+            lq, mq = make_quantizers(
+                qtype,
+                qbits,
+                False,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            lq_signed, _ = make_quantizers(
+                qtype,
+                qbits,
+                True,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            self.conv1 = GATConv(
+                    dataset.num_features,
+                    hidden,
+                    bias=False,
+                )
+            for i in range(num_layers - 1):
+                self.convs.append(
+                    gat_conv(
+                        hidden,
+                        hidden,
+                        layer_quantizers=lq,
+                        mp_quantizers=mq,
+                        apx=apx,
+                    )
+                )
+                self.activs.append(ReLU())
+
+            self.lin1 = LinearQuantized(hidden, hidden, layer_quantizers=lq_signed, apx=apx, bias=False)
+            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx, bias=False)
+
+    def reset_parameters(self):
+        self.conv1.reset_parameters()
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.lin1.reset_parameters()
+        self.lin2.reset_parameters()
+
+    def forward(self, data):
+        if hasattr(data, "prob_mask") and data.prob_mask is not None:
+            mask = evaluate_prob_mask(data)
+        else:
+            mask = None
+
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        x = F.relu(self.conv1(x, edge_index))
+        for conv in self.convs:
+            x = conv(x, edge_index, mask)
+            x = F.relu(x)
+            x = F.dropout(x, p=0.5, training=self.training)
+
+        x = global_mean_pool(x, batch)
+
+        x = F.relu(self.lin1(x))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.lin2(x)
+        return F.log_softmax(x, dim=-1)
+    
+class CitGAT(torch.nn.Module):
+    def __init__(
+        self,
+        dataset,
+        hidden,
+        qtype,
+        qbits,
+        ste,
+        momentum,
+        percentile,
+        sample_prop,
+        q_input=True,
+        q_weight=True,
+        q_features=True,
+        apx=0,
+    ):
+        super(CitGAT, self).__init__()
+        if qbits == 32:
+            self.conv1 = GATConv(
+                dataset.num_features,
+                hidden,
+                bias=False,
+            )
+            self.conv2 = GATConv(
+                hidden,
+                dataset.num_classes,
+                bias=True,
+            )
+        else:
+            gat_conv = GATConvQ
+            lq, mq = make_quantizers(
+                qtype,
+                qbits,
+                True,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            self.conv1 = gat_conv(
+                    dataset.num_features,
+                    hidden,
+                    layer_quantizers=lq,
+                    mp_quantizers=mq,
+                    apx=apx,
+                )
+            self.conv2 = gat_conv(
+                    hidden,
+                    dataset.num_classes,
+                    layer_quantizers=lq,
+                    mp_quantizers=mq,
+                    apx=apx,
+                    bias=True,
+                )
+
+    def reset_parameters(self):
+        self.conv1.reset_parameters()
+        self.conv2.reset_parameters()
+
+    def forward(self, data):
+        if hasattr(data, "prob_mask") and data.prob_mask is not None:
+            mask = evaluate_prob_mask(data)
+        else:
+            mask = None
+
+        x, edge_index = data.x, data.edge_index
+
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = F.elu(self.conv1(x, edge_index, mask))
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv2(x, edge_index, mask)
+        return x
+    
+class GCN(torch.nn.Module):
+    def __init__(
+        self,
+        dataset,
+        num_layers,
+        hidden,
+        qtype,
+        qbits,
+        ste,
+        momentum,
+        percentile,
+        sample_prop,
+        q_input=True,
+        q_weight=True,
+        q_features=True,
+        apx=0,
+    ):
+        super(GCN, self).__init__()
+
+        self.num_layers = num_layers
+
+        self.convs = torch.nn.ModuleList()
+        self.activs = torch.nn.ModuleList()
+        if qbits == 32:
+            self.conv1 = GCNConv(
+                    dataset.num_features,
+                    hidden,
+                    cached=False, normalize=True, bias=False
+                )
+            for i in range(num_layers - 1):
+                self.convs.append(
+                    GCNConv(
+                        hidden,
+                        hidden,
+                        cached=False, normalize=True, bias=False
+                    )
+                )
+                self.activs.append(ReLU())
+            self.lin1 = Linear(hidden, hidden, bias=False)
+            self.lin2 = Linear(hidden, dataset.num_classes)
+        else:
+            gcn_conv = GCNConvQ
+            lq, mq = make_quantizers(
+                qtype,
+                qbits,
+                False,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            lq_signed, _ = make_quantizers(
+                qtype,
+                qbits,
+                True,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            self.conv1 = GCNConv(
+                    dataset.num_features,
+                    hidden,
+                    cached=False, normalize=True, bias=False
+                )
+            for i in range(num_layers - 1):
+                self.convs.append(
+                    gcn_conv(
+                        hidden,
+                        hidden,
+                        layer_quantizers=lq,
+                        mp_quantizers=mq,
+                        apx=apx,
+                        cached=False, normalize=True, bias=False
+                    )
+                )
+                self.activs.append(ReLU())
+
+            self.lin1 = LinearQuantized(hidden, hidden, layer_quantizers=lq_signed, apx=apx, bias=False)
+            self.lin2 = LinearQuantized(hidden, dataset.num_classes, layer_quantizers=lq, apx=apx, bias=False)
+
+    def reset_parameters(self):
+        self.conv1.reset_parameters()
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.lin1.reset_parameters()
+        self.lin2.reset_parameters()
+
+    def forward(self, data):
+        if hasattr(data, "prob_mask") and data.prob_mask is not None:
+            mask = evaluate_prob_mask(data)
+        else:
+            mask = None
+
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        x = F.relu(self.conv1(x, edge_index))
+        for conv in self.convs:
+            x = conv(x, edge_index, mask)
+            x = F.relu(x)
+            x = F.dropout(x, p=0.5, training=self.training)
+
+        x = global_mean_pool(x, batch)
+
+        x = F.relu(self.lin1(x))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.lin2(x)
+        return F.log_softmax(x, dim=-1)
+    
+class CitGCN(torch.nn.Module):
+    def __init__(
+        self,
+        dataset,
+        hidden,
+        qtype,
+        qbits,
+        ste,
+        momentum,
+        percentile,
+        sample_prop,
+        q_input=True,
+        q_weight=True,
+        q_features=True,
+        apx=0,
+    ):
+        super(CitGCN, self).__init__()
+        if qbits == 32:
+            self.conv1 = GCNConv(
+                dataset.num_features,
+                hidden,
+                cached=False, normalize=True, bias=False
+            )
+            self.conv2 = GCNConv(
+                hidden,
+                dataset.num_classes,
+                cached=False, normalize=True, bias=True
+            )
+        else:
+            gcn_conv = GCNConvQ
+            lq, mq = make_quantizers(
+                qtype,
+                qbits,
+                True,
+                ste=ste,
+                momentum=momentum,
+                percentile=percentile,
+                sample_prop=sample_prop,
+                q_input=q_input,
+                q_weight=q_weight,
+                q_features=q_features
+            )
+            self.conv1 = gcn_conv(
+                    dataset.num_features,
+                    hidden,
+                    layer_quantizers=lq,
+                    mp_quantizers=mq,
+                    apx=apx, cached=False, normalize=True, bias=False,
+                )
+            self.conv2 = gcn_conv(
+                    hidden,
+                    dataset.num_classes,
+                    layer_quantizers=lq,
+                    mp_quantizers=mq,
+                    apx=apx, cached=False, normalize=True, bias=True,
+                )
+
+    def reset_parameters(self):
+        self.conv1.reset_parameters()
+        self.conv2.reset_parameters()
+
+    def forward(self, data, edge_weight=None):
+        if hasattr(data, "prob_mask") and data.prob_mask is not None:
+            mask = evaluate_prob_mask(data)
+        else:
+            mask = None
+
+        x, edge_index = data.x, data.edge_index
+
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.conv1(x, edge_index, mask).relu()
         x = F.dropout(x, p=0.5, training=self.training)
         x = self.conv2(x, edge_index, mask)
         return x

@@ -1,0 +1,9 @@
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 32 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 8 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 8 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly --apx 5 --trainapx 5
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 8 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly --apx 6 --trainapx 6
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 8 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly --apx 7 --trainapx 7
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 7 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 6 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 5 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 32 --qbits 4 --net 'SAGE' --dataset 'COLLAB' --batch_size 64 --evalonly

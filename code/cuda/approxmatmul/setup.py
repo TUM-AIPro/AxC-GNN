@@ -1,11 +1,13 @@
 import setuptools
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
+EXT_NAME = 'apxop' # rename extension here
+
 setuptools.setup(
-    name='apxop',
-    version="0.0.15",
+    name=EXT_NAME,
+    version="0.0.1",
     author='Rodion Novkin',
-    author_email='rodion.novkin@iti.uni-stuttgart.de',
+    author_email='rodion.novkin@tum.de',
     description='Approximate Operations For PyTorch Tensors',
     packages=setuptools.find_packages(),
     classifiers=[
@@ -14,7 +16,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     ext_modules=[
-        CUDAExtension('apxop', [
+        CUDAExtension(EXT_NAME, [
             'apxop.cpp',
             'apxop_kernels.cu',
         ]),

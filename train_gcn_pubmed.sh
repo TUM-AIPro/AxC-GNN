@@ -1,0 +1,3 @@
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 128 --qbits 32 --net 'GCN' --dataset 'PubMed' --batch_size 64 --runs 1 # run FP32 training
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 128 --qbits 8 --net 'GIN' --dataset 'PubMed' --batch_size 64 --runs 3 # run QAT 8-bit training
+CUDA_VISIBLE_DEVICES=0 python main.py --hidden 128 --qbits 8 --net 'GIN' --dataset 'PubMed' --batch_size 64 --runs 3 --trainapx 5 # run QAT+AAT training for 8 bits and approximation mode 5

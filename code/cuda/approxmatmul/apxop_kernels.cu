@@ -12,6 +12,7 @@
 // Approimate multipliers from https://ehw.fit.vutbr.cz/evoapproxlib/?folder=multiplers/8x8_signed
 // V. Mrazek, Z. Vasicek, L. Sekanina, H. Jiang and J. Han, Scalable Construction of Approximate Multipliers With Formally Guaranteed Worst Case Error in IEEE Transactions on Very Large Scale Integration (VLSI) Systems, vol. 26, no. 11, pp. 2572-2576, Nov. 2018.
 
+// main functions and kernels are in the end after approximators
 __device__ int16_t mul8s_1KV6(int8_t A, int8_t B)
 {
   int16_t P, P_;
@@ -1574,7 +1575,7 @@ __device__ int16_t mul8s_1L12(int8_t A, int8_t B)
   return P;
 }
 
-template <typename scalar_t>
+template <typename scalar_t> // only matmul_cuda_kernel is commented
 __global__ void batch_matmul_cuda_kernel(
     const torch::PackedTensorAccessor<scalar_t,3,torch::RestrictPtrTraits> a,
     const torch::PackedTensorAccessor<scalar_t,3,torch::RestrictPtrTraits> b,
@@ -1622,8 +1623,8 @@ __global__ void batch_matmul_cuda_kernel(
       out[n][row][col] = val;
   }
 }
-
-template <typename scalar_t>
+// CUDA kernel for mm_cuda
+template <typename scalar_t> // in this particular case scalar_t is int32, but values are within signed 8-bit format
 __global__ void matmul_cuda_kernel(
     const torch::PackedTensorAccessor<scalar_t,2,torch::RestrictPtrTraits> a,
     const torch::PackedTensorAccessor<scalar_t,2,torch::RestrictPtrTraits> b,
@@ -1634,22 +1635,29 @@ __global__ void matmul_cuda_kernel(
     const int apx_type
     ) {
 
+  // CUDA indexing for parallel invocation
   const int col = blockIdx.y * blockDim.y + threadIdx.y;
   const int row = blockIdx.x * blockDim.x + threadIdx.x;
 
-
-  if (row < a_size && col < b_size) {
-      scalar_t val = 0;
-
-      for (int i = 0; i < in_size; ++i) {
+  if (row < a_size && col < b_size) { // iteration over uncommon dimensions of allocated tensors
+      scalar_t val = 0; // set-up accumulator (output value) for matrix multiplication
+      for (int i = 0; i < in_size; ++i) { // iteration over a common dimension of allocated tensors
+        // convert elements of tensors A and B from int32 to int8_t
         int8_t a_int = a[row][i];
         int8_t b_int = b[i][col];
+        // selection of approximation mode
         if (apx_type == 0) {
+          // no approximation case: convert from int8_t to int16_t to avoid overflow
           int16_t a_int16 = a_int;
           int16_t b_int16 = b_int;
-          val += a_int16 * b_int16;
+          val += a_int16 * b_int16; // output accumulation
         } else if (apx_type == 1) {
-          val += mul8s_1KV6(a_int, b_int);
+          // pass both int8_t values to device functions responsible for approximate multiplication
+          // any custom multiplier with behavioral C-code can be passed in a similar way
+          // all invoked approximate functions must be __device__ functions (see examples above)
+          // approximate addition can be added instead of += in output accumulator
+          // pay attention to used data types inside kernel and device functions
+          val += mul8s_1KV6(a_int, b_int); // output accumulation
         } else if (apx_type == 2) {
           val += mul8s_1KV8(a_int, b_int);
         } else if (apx_type == 3) {
@@ -1666,34 +1674,35 @@ __global__ void matmul_cuda_kernel(
           val += mul8s_1L12(a_int, b_int);
         }
       }
-
-      out[row][col] = val;
+      out[row][col] = val; // assign accumulated result to an element of output tensor A*B
   }
 }
 
 torch::Tensor bmm_cuda(
     torch::Tensor a,
     torch::Tensor b,
-    int apx_type)
+    int apx_type,
+    int threads)
 {
-
+  // get output tensor dimensions
   const int batch_size = a.size(0);
   const int a_size = a.size(1);
   const int b_size = b.size(2);
 
+  // set-up output tensor, dtype is int32 since input tensors are int32
   auto options = torch::TensorOptions()
           .dtype(a.dtype())
           .device(torch::kCUDA, a.device().index());
   auto out = torch::zeros({batch_size, a_size, b_size}, options);
 
+  // set-up CUDA blocks and threads
   const int in_size = a.size(2);
-  const int threads = 16;
   const dim3 threads_per_block(threads, threads, 1);
   const dim3 blocks(a_size / threads + 1,
                     b_size / threads + 1,
                     batch_size);
 
-  // Dispatch
+  // dispatch data to batch_matmul_cuda_kernel
   AT_DISPATCH_ALL_TYPES(a.type(), "batch_matmul_cuda", ([&] {
                   batch_matmul_cuda_kernel<scalar_t><<<blocks, threads_per_block>>>(
                   a.packed_accessor<scalar_t,3,torch::RestrictPtrTraits>(),
@@ -1707,23 +1716,26 @@ torch::Tensor bmm_cuda(
 torch::Tensor mm_cuda(
     torch::Tensor a,
     torch::Tensor b,
-    int apx_type)
+    int apx_type,
+    int threads)
 {
+  // get output tensor dimensions
   const int a_size = a.size(0);
   const int b_size = b.size(1);
 
+  // set-up output tensor, dtype is int32 since input tensors are int32
   auto options = torch::TensorOptions()
           .dtype(a.dtype())
           .device(torch::kCUDA, a.device().index());
   auto out = torch::zeros({a_size, b_size}, options);
 
+  // set-up CUDA blocks and threads
   const int in_size = a.size(1);
-  const int threads = 16;
   const dim3 threads_per_block(threads, threads);
   const dim3 blocks(a_size / threads + 1,
                     b_size / threads + 1);
 
-  // Dispatch
+  // dispatch data to matmul_cuda_kernel
   AT_DISPATCH_ALL_TYPES(a.type(), "matmul_cuda", ([&] {
                   matmul_cuda_kernel<scalar_t><<<blocks, threads_per_block>>>(
                   a.packed_accessor<scalar_t,2,torch::RestrictPtrTraits>(),
