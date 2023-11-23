@@ -6,11 +6,14 @@ This code requires [PyTorch](https://pytorch.org/) and [PyG](https://pyg.org/) w
 
 ## CUDA kernel installation
 Navigate to `code/cuda/apxop` and run `install_kernel.sh` to install approximate multiplication kernel for [EvoApproxLib](https://ehw.fit.vutbr.cz/evoapproxlib/?folder=multiplers/8x8_signed). If you are using Conda, remove `--user` flag from the `install_kernel.sh` as per Conda recommendation. You can also use:
-    $ pip install .
-
+```bash
+pip install .
+```
 ## Run GNN training and evaluation
 The sample commands for GNN training are given in `train_gcn_pubmed.sh`. To explore all training options use:
-    $ python main.py --help
+```bash
+python main.py --help
+```
 Note that saved models will be overwritten in their corresponding save folders in `models/...`. Currently training times for quantized networks are larger than for their FP32 versions, since DegreeQuant quantization is performed in numpy on CPU as in the original DegreeQuant [repository](https://github.com/camlsys/degree-quant). However, approximate multiplication adds no additional time overhead for quantized networks.
 The sample commands for GNN evaluation can be found in `eval_*.sh`. Mainly, evaluation mode is initiated with `--evalonly` flag for `main.py`.
 
