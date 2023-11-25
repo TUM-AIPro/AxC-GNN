@@ -21,4 +21,5 @@ The sample commands for GNN evaluation can be found in `eval_*.sh`. Mainly, eval
 To test other approximate operations, CUDA kernel needs to be modified and installed again. It is recommended to copy the `code/cuda/approxmatmul` folder and change an extension name in `setup.py`. The only file, that needs to be modified is `apxop_kernels.cu`, in particular `matmul_cuda_kernel` or/and `batch_matmul_cuda_kernel` fucntions within the file. `matmul_cuda_kernel` in `apxop_kernels.cu` contains comments, describing the process of adding new approximate operations. Behavioral C-code of approximate operations can be employed in CUDA directly as `__device__` functions and called from `__global__ void` kernel functions (see examples and comments in `apxop_kernels.cu`).
 
 ## Citing the paper
-TODO
+The following paper needs to be cited: 
+Rodion Novkin, Florian Klemme, and Hussam Amrouch "Approximationaware and quantization-aware training for graph neural networks", IEEE Transactions on Computers (TC), 2023.
