@@ -22,4 +22,4 @@ To test other approximate operations, CUDA kernel needs to be modified and insta
 
 ## Citing the paper
 The following paper needs to be cited: 
-Rodion Novkin, Florian Klemme, and Hussam Amrouch "Approximationaware and quantization-aware training for graph neural networks", IEEE Transactions on Computers (TC), 2023.
+Rodion Novkin, Florian Klemme, and Hussam Amrouch, "Approximation- and Quantization-Aware Training for Graph Neural Networks" in IEEE Transactions on Computers, pp. 1-14, 2023. doi: 10.1109/TC.2023.3337319
